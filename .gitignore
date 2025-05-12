@@ -1,3 +1,12 @@
+# vim swap files
+*.swd
+*.swo
+*.swp
+
+# oresat specific configs
+configs/oresat*
+target/chroot/oresat*
+
 latest_version
 ignore/
 deploy/

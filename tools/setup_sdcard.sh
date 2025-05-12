@@ -39,6 +39,7 @@ unset uboot_disable_pru
 #Defaults
 ROOTFS_TYPE=ext4
 ROOTFS_LABEL=rootfs
+ROOTFS_B_LABEL=rootfs_b
 
 DIR="$PWD"
 TEMPDIR=$(mktemp -d)
@@ -452,13 +453,41 @@ sfdisk_partition_layout () {
 sfdisk_single_partition_layout () {
 	sfdisk_options="--force --wipe-partitions always ${sfdisk_gpt}"
 	partition_one_start_mb="${conf_boot_startmb}"
+	partition_one_size_mb="${conf_partition_size}"
 
 	echo "sfdisk: [$(LC_ALL=C sfdisk --version)]"
 	echo "sfdisk: [${sfdisk_options} ${media}]"
-	echo "sfdisk: [${partition_one_start_mb}M,,${partition_one_fstype},*]"
+	echo "sfdisk: [${partition_one_start_mb}M,${partition_one_size_mb}M,${partition_one_fstype},*]"
+	#echo "sfdisk: [${partition_one_start_mb}M,,${partition_one_fstype},*]"
+
+	if [ "${conf_partition_size}" = "" ] ; then
+	  LC_ALL=C sfdisk ${sfdisk_options} "${media}" <<-__EOF__
+		  ${partition_one_start_mb}M,,${partition_one_fstype},*
+		__EOF__
+  else
+  	LC_ALL=C sfdisk ${sfdisk_options} "${media}" <<-__EOF__
+		  ${partition_one_start_mb}M,${partition_one_size_mb}M,${partition_one_fstype},*
+		__EOF__
+  fi
+
+	sync
+}
+
+sfdisk_ab_partition_layout () {
+	sfdisk_options="--force --wipe-partitions always ${sfdisk_gpt}"
+	partition_one_start_mb="${conf_boot_startmb}"
+	partition_one_size_mb=${conf_partition_size}
+	partition_two_start_mb=$(($partition_one_start_mb + $partition_one_size_mb))
+	partition_two_size_mb=$partition_one_size_mb
+
+	echo "sfdisk: [$(LC_ALL=C sfdisk --version)]"
+	echo "sfdisk: [${sfdisk_options} ${media}]"
+	echo "sfdisk: [${partition_one_start_mb}M,${partition_one_size_mb}M,${partition_one_fstype},*]"
+	echo "sfdisk: [${partition_two_start_mb}M,${partition_two_size_mb}M,${partition_two_fstype},*]"
 
 	LC_ALL=C sfdisk ${sfdisk_options} "${media}" <<-__EOF__
-		${partition_one_start_mb}M,,${partition_one_fstype},*
+		${partition_one_start_mb}M,${partition_one_size_mb}M,${partition_one_fstype},*
+		${partition_two_start_mb}M,${partition_two_size_mb}M,${partition_two_fstype},-
 	__EOF__
 
 	sync
@@ -615,6 +644,16 @@ format_rootfs_partition () {
 	rootfs_drive="${conf_root_device}p${media_rootfs_partition}"
 }
 
+format_rootfs_b_partition () {
+	mkfs="mkfs.${ROOTFS_TYPE}"
+	mkfs_partition="${media_prefix}${media_rootfs_b_partition}"
+	mkfs_label="-L ${ROOTFS_B_LABEL}"
+
+	format_partition
+
+	#rootfs_drive="${conf_root_device}p${media_rootfs_b_partition}"
+}
+
 create_partitions () {
 	unset bootloader_installed
 	unset sfdisk_gpt
@@ -699,7 +738,12 @@ create_partitions () {
 			partition_one_fstype=${partition_one_fstype:-"0xE"}
 			sfdisk_partition_layout
 		else
-			sfdisk_single_partition_layout
+		  if [ "x${ab_boot}" = "xenable" ] ; then
+			  sfdisk_ab_partition_layout
+		    media_rootfs_b_partition=2
+      else
+        sfdisk_single_partition_layout
+      fi
 			media_rootfs_partition=1
 		fi
 		;;
@@ -751,7 +795,11 @@ create_partitions () {
 		sync
 		test_loop=$(echo ${media_loop} | awk -F'/' '{print $3}')
 		if [ -e /dev/mapper/${test_loop}p${media_boot_partition} ] && [ -e /dev/mapper/${test_loop}p${media_rootfs_partition} ] ; then
-			media_prefix="/dev/mapper/${test_loop}p"
+	    if [ "x${b_image}" = "xenable" ] && ! [ -e /dev/mapper/${test_loop}p${media_rootfs_b_partition} ] ; then
+        echo "Error: B partition doesn't exist"
+        exit
+      fi
+      media_prefix="/dev/mapper/${test_loop}p"
 		else
 			ls -lh /dev/mapper/
 			echo "Error: not sure what to do (new feature)."
@@ -764,6 +812,10 @@ create_partitions () {
 	if [ "x${media_boot_partition}" = "x${media_rootfs_partition}" ] ; then
 		mount_partition_format="${ROOTFS_TYPE}"
 		format_rootfs_partition
+    if [ "x${b_image}" = "xenable" ] ; then
+      echo "formatting b partition"
+		  format_rootfs_b_partition
+    fi
 	else
 		format_boot_partition
 		if [ ! "x${conf_swap_sizemb}" = "x" ] ; then
@@ -1697,6 +1749,9 @@ process_dtb_conf () {
 	#defaults, if not set...
 	case "${bootloader_location}" in
 	fatfs_boot)
+		conf_boot_startmb=${conf_boot_startmb:-"1"}
+		;;
+	no_bootloader_single_partition)
 		conf_boot_startmb=${conf_boot_startmb:-"1"}
 		;;
 	dd_uboot_boot|dd_spl_uboot_boot)
